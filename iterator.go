@@ -425,7 +425,9 @@ func (it *Iterator) Item() *Item {
 	tx := it.txn
 	if tx.update {
 		// Track reads if this is an update txn.
-		tx.reads = append(tx.reads, farm.Fingerprint64(it.item.Key()))
+		fp := farm.Fingerprint64(it.item.Key())
+		tx.reads = append(tx.reads, fp)
+		markStripeInBitmap(&tx.readBitmap, fp)
 	}
 	return it.item
 }
@@ -609,7 +611,7 @@ FILL:
 	// fill item based on current cursor position. All Next calls have returned, so reaching here
 	// means no Next was called.
 
-	mi.Next()                           // Advance but no fill item yet.
+	mi.Next() // Advance but no fill item yet.
 	if !it.opt.Reverse || !mi.Valid() { // Forward direction, or invalid.
 		it.setItem(item)
 		return true

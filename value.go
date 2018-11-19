@@ -729,9 +729,12 @@ type request struct {
 	// Input values
 	Entries []*Entry
 	// Output values and wait group stuff below
-	Ptrs []valuePointer
-	Wg   sync.WaitGroup
-	Err  error
+	Ptrs  []valuePointer
+	Wg    sync.WaitGroup
+	Err   error
+	Fp    uint16
+	Size  int64
+	Count int64
 }
 
 func (req *request) Wait() error {

@@ -166,13 +166,16 @@ func (n *node) casNextOffset(h int, old, val uint32) bool {
 //	return n != nil && y.CompareKeys(key, n.key) > 0
 //}
 
-func (s *Skiplist) randomHeight() int {
+func randomHeight() int {
 	h := 1
-	for h < maxHeight && uint32(s.rng.Int63()) <= heightIncrease {
+	for h < maxHeight && fastrand() <= heightIncrease {
 		h++
 	}
 	return h
 }
+
+//go:linkname fastrand runtime.fastrand
+func fastrand() uint32
 
 func (s *Skiplist) getNext(nd *node, height int) *node {
 	return s.arena.getNode(nd.getNextOffset(height))
@@ -311,7 +314,7 @@ func (s *Skiplist) PutWithHint(key []byte, v y.ValueStruct, hint *Hint) {
 	// Since we allow overwrite, we may not need to create a new node. We might not even need to
 	// increase the height. Let's defer these actions.
 	listHeight := s.getHeight()
-	height := s.randomHeight()
+	height := randomHeight()
 
 	// Try to increase s.height via CAS.
 	listHeight = s.getHeight()

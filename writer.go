@@ -17,27 +17,46 @@
 package badger
 
 import (
-	"runtime"
-	"time"
-
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
 	"github.com/pkg/errors"
+	"sync"
+	"time"
 )
+
+const numLSMWorker = 5
 
 type writeWorker struct {
 	*DB
-	writeLSMCh chan []*request
+	writeLSMWorkers [numLSMWorker]*writeLSMWorker
+	writeLSMBarrier sync.WaitGroup
+	writeLSMCh      chan []*request
+}
+
+type writeLSMWorker struct {
+	reqs   []*request
+	wakeUp chan struct{}
+}
+
+func newWriteLSMWorker() *writeLSMWorker {
+	return &writeLSMWorker{
+		reqs:   make([]*request, 0, 128),
+		wakeUp: make(chan struct{}, 1),
+	}
 }
 
 func startWriteWorker(db *DB) *y.Closer {
-	closer := y.NewCloser(2)
+	closer := y.NewCloser(1 + numLSMWorker)
 	w := &writeWorker{
 		DB:         db,
 		writeLSMCh: make(chan []*request, 1),
 	}
 	go w.runWriteVLog(closer)
-	go w.runWriteLSM(closer)
+	go w.dispatchLSMWrites()
+	for i := range w.writeLSMWorkers {
+		w.writeLSMWorkers[i] = newWriteLSMWorker()
+		go w.runWriteLSM(closer, i)
+	}
 	return closer
 }
 
@@ -62,19 +81,26 @@ func (w *writeWorker) runWriteVLog(lc *y.Closer) {
 			w.done(reqs, err)
 			return
 		}
+		for i := len(reqs) - 1; i >= 0; i-- {
+			req := reqs[i]
+			if w.updateOffset(req.Ptrs) {
+				break
+			}
+		}
 		w.writeLSMCh <- reqs
 	}
 }
 
-func (w *writeWorker) runWriteLSM(lc *y.Closer) {
+func (w *writeWorker) runWriteLSM(lc *y.Closer, idx int) {
 	defer lc.Done()
-	runtime.LockOSThread()
-	for {
-		reqs, ok := <-w.writeLSMCh
-		if !ok {
-			return
+	ctx := w.writeLSMWorkers[idx]
+	for range ctx.wakeUp {
+		if len(ctx.reqs) == 0 {
+			continue
 		}
-		w.writeLSM(reqs)
+		w.writeLSM(ctx.reqs)
+		ctx.reqs = make([]*request, 0, len(ctx.reqs))
+		w.writeLSMBarrier.Done()
 	}
 }
 
@@ -93,17 +119,43 @@ func (w *writeWorker) closeWriteVLog() {
 	close(w.writeLSMCh)
 }
 
-// writeLSM is called serially by only one goroutine.
-func (w *writeWorker) writeLSM(reqs []*request) {
-	if len(reqs) == 0 {
-		return
-	}
-	var count int
-	for _, b := range reqs {
-		if len(b.Entries) == 0 {
-			continue
+func (w *writeWorker) sendToLSMWriter(reqs []*request) error {
+	var (
+		size, count int64
+		curr        int
+		used        [numLSMWorker]bool
+	)
+
+	for curr < len(reqs) {
+		req := reqs[curr]
+		size += req.Size
+		count += req.Count
+		if count < w.opt.maxBatchCount && size < w.opt.maxBatchSize {
+			idx := req.Fp % numLSMWorker
+			lw := w.writeLSMWorkers[idx]
+			if !used[idx] {
+				used[idx] = true
+				w.writeLSMBarrier.Add(1)
+			}
+			lw.reqs = append(lw.reqs, req)
+
+			curr++
+			if curr != len(reqs) {
+				continue
+			}
 		}
-		count += len(b.Entries)
+		size = 0
+		count = 0
+
+		for i := range used {
+			if used[i] {
+				w.writeLSMWorkers[i].wakeUp <- struct{}{}
+				used[i] = false
+			}
+		}
+		w.writeLSMBarrier.Wait()
+
+		// We need wait or ongoing write done, and then alloc a new mem table
 		var i uint64
 		var err error
 		for err = w.ensureRoomForWrite(); err == errNoRoom; err = w.ensureRoomForWrite() {
@@ -117,17 +169,46 @@ func (w *writeWorker) writeLSM(reqs []*request) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		if err != nil {
-			w.done(reqs, err)
-			return
+			return err
 		}
+	}
+	return nil
+}
+
+func (w *writeWorker) dispatchLSMWrites() {
+	for reqs := range w.writeLSMCh {
+		if err := w.sendToLSMWriter(reqs); err != nil {
+			w.done(reqs, err)
+			break
+		}
+	}
+	w.closeWriteLSMWorkers()
+}
+
+func (w *writeWorker) closeWriteLSMWorkers() {
+	for i := range w.writeLSMWorkers {
+		close(w.writeLSMWorkers[i].wakeUp)
+	}
+}
+
+// writeLSM is called serially by only one goroutine.
+func (w *writeWorker) writeLSM(reqs []*request) {
+	if len(reqs) == 0 {
+		return
+	}
+	var count int
+	for _, b := range reqs {
+		if len(b.Entries) == 0 {
+			continue
+		}
+		count += len(b.Entries)
 		if err := w.writeToLSM(b); err != nil {
 			w.done(reqs, err)
 			return
 		}
-		w.updateOffset(b.Ptrs)
 	}
 	w.done(reqs, nil)
-	log.Debugf("%d entries written", count)
+	//log.Debugf("%d entries written", count)
 	return
 }
 

@@ -238,8 +238,10 @@ func Open(opt Options) (db *DB, err error) {
 	orc := &oracle{
 		isManaged:  opt.managedTxns,
 		nextCommit: 1,
-		commits:    make(map[uint64]uint64),
 		readMark:   y.WaterMark{},
+	}
+	for i := range orc.commits.stripes {
+		orc.commits.stripes[i].commits = make(map[uint64]uint64, 1000)
 	}
 	orc.readMark.Init()
 
@@ -501,7 +503,7 @@ func (db *DB) get(key []byte) (y.ValueStruct, error) {
 	return db.lc.get(key)
 }
 
-func (db *DB) updateOffset(ptrs []valuePointer) {
+func (db *DB) updateOffset(ptrs []valuePointer) bool {
 	var ptr valuePointer
 	for i := len(ptrs) - 1; i >= 0; i-- {
 		p := ptrs[i]
@@ -511,13 +513,14 @@ func (db *DB) updateOffset(ptrs []valuePointer) {
 		}
 	}
 	if ptr.IsZero() {
-		return
+		return false
 	}
 
 	db.Lock()
 	y.Assert(!ptr.Less(db.vptr))
 	db.vptr = ptr
 	db.Unlock()
+	return true
 }
 
 var requestPool = sync.Pool{
@@ -531,6 +534,10 @@ func (db *DB) shouldWriteValueToLSM(e *Entry) bool {
 }
 
 func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
+	return db.sendToWriteChWithFp(entries, 0)
+}
+
+func (db *DB) sendToWriteChWithFp(entries []*Entry, fp uint16) (*request, error) {
 	var count, size int64
 	for _, e := range entries {
 		size += int64(e.estimateSize(db.opt.ValueThreshold))
@@ -546,6 +553,9 @@ func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
 	req.Entries = entries
 	req.Wg = sync.WaitGroup{}
 	req.Wg.Add(1)
+	req.Fp = fp
+	req.Size = size
+	req.Count = count
 	db.writeCh <- req // Handled in writeWorker.
 	y.NumPuts.Add(int64(len(entries)))
 
