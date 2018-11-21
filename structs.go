@@ -110,6 +110,7 @@ func encodeEntry(e *Entry, buf *bytes.Buffer) (int, error) {
 		meta:  e.meta,
 		umlen: byte(len(e.UserMeta)),
 	}
+	sz := headerBufSize
 
 	var headerEnc [headerBufSize]byte
 	h.Encode(headerEnc[:])
@@ -121,18 +122,29 @@ func encodeEntry(e *Entry, buf *bytes.Buffer) (int, error) {
 
 	buf.Write(e.UserMeta)
 	hash.Write(e.UserMeta)
+	sz += len(e.UserMeta)
 
 	buf.Write(e.Key)
 	hash.Write(e.Key)
+	sz += len(e.Key)
 
 	buf.Write(e.Value)
 	hash.Write(e.Value)
+	sz += len(e.Value)
 
 	var crcBuf [4]byte
 	binary.BigEndian.PutUint32(crcBuf[:], hash.Sum32())
 	buf.Write(crcBuf[:])
+	sz += 4
 
-	return len(headerEnc) + len(e.UserMeta) + len(e.Key) + len(e.Value) + len(crcBuf), nil
+	padBytes := (8 - (sz % 8)) % 8
+	if padBytes != 0 {
+		var dummy [8]byte
+		buf.Write(dummy[:padBytes])
+		sz += padBytes
+	}
+
+	return sz, nil
 }
 
 func (e Entry) print(prefix string) {
