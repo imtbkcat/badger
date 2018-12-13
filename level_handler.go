@@ -95,7 +95,9 @@ func (s *levelHandler) deleteTables(toDel []*table.Table) error {
 	}
 	s.tables = newTables
 
-	assertTablesOrder(newTables)
+	if s.level != 0 {
+		assertTablesOrder(newTables)
+	}
 
 	s.Unlock() // Unlock s _before_ we DecrRef our tables, which can be slow.
 
