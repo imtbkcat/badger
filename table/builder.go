@@ -18,12 +18,13 @@ package table
 
 import (
 	"encoding/binary"
-	"github.com/coocood/badger/fileutil"
-	"github.com/coocood/badger/options"
-	"golang.org/x/time/rate"
 	"os"
 	"reflect"
 	"unsafe"
+
+	"github.com/coocood/badger/fileutil"
+	"github.com/coocood/badger/options"
+	"golang.org/x/time/rate"
 
 	"github.com/coocood/badger/y"
 	"github.com/coocood/bbloom"
@@ -69,6 +70,7 @@ type Builder struct {
 	// end offsets of every entry within the current block being built.
 	// The offsets are relative to the start of the block.
 	entryEndOffsets []uint32
+	entryEndOffSize int
 
 	bloomFilter bbloom.Bloom
 
@@ -76,16 +78,18 @@ type Builder struct {
 	hashIndexBuilder hashIndexBuilder
 }
 
+var numEntries int
+
 // NewTableBuilder makes a new TableBuilder.
 // If the limiter is nil, the write speed during table build will not be limited.
 func NewTableBuilder(f *os.File, limiter *rate.Limiter, opt options.TableBuilderOptions) *Builder {
-	assumeKeyNum := 256 * 1024
+	//assumeKeyNum := 256 * 1024
 	return &Builder{
 		w:           fileutil.NewBufferedFileWriter(f, opt.WriteBufferSize, opt.BytesPerSync, limiter),
 		buf:         make([]byte, 0, 4*1024),
-		baseKeysBuf: make([]byte, 0, assumeKeyNum/restartInterval),
+		baseKeysBuf: make([]byte, 0, numEntries/restartInterval),
 		// assume a large enough num of keys to init bloom filter.
-		bloomFilter:      bbloom.New(float64(assumeKeyNum), 0.01),
+		bloomFilter:      bbloom.New(float64(numEntries), 0.01),
 		enableHashIndex:  opt.EnableHashIndex,
 		hashIndexBuilder: newHashIndexBuilder(opt.HashUtilRatio),
 	}
@@ -166,6 +170,7 @@ func (b *Builder) addHelper(key []byte, v y.ValueStruct) {
 }
 
 func (b *Builder) finishBlock() error {
+	b.entryEndOffSize += len(u32SliceToBytes(b.entryEndOffsets))
 	b.buf = append(b.buf, u32SliceToBytes(b.entryEndOffsets)...)
 	b.buf = append(b.buf, u32ToBytes(uint32(len(b.entryEndOffsets)))...)
 	b.blockEndOffsets = append(b.blockEndOffsets, uint32(b.writtenLen+len(b.buf)))
@@ -225,6 +230,7 @@ func (b *Builder) Finish() error {
 	bfData := b.bloomFilter.BinaryMarshal()
 	b.buf = append(b.buf, bfData...)
 	b.buf = append(b.buf, u32ToBytes(uint32(len(bfData)))...)
+	println(len(bfData))
 
 	if b.enableHashIndex {
 		b.buf = b.hashIndexBuilder.finish(b.buf)

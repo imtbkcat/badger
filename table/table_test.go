@@ -778,6 +778,7 @@ func BenchmarkPointGet(b *testing.B) {
 	for _, n := range ns {
 		filename := fmt.Sprintf("%s%s%d.sst", os.TempDir(), string(os.PathSeparator), rand.Int63())
 		f, err := y.OpenSyncedFile(filename, true)
+		numEntries = n
 		builder := NewTableBuilder(f, nil, defaultBuilderOpt)
 		keys := make([][]byte, n)
 		y.Check(err)
@@ -791,25 +792,23 @@ func BenchmarkPointGet(b *testing.B) {
 		y.Check(builder.Finish())
 		tbl, err := OpenTable(f, options.MemoryMap)
 		y.Check(err)
+		println(tbl.tableSize)
 		b.ResetTimer()
 
 		b.Run(fmt.Sprintf("Seek_%d", n), func(b *testing.B) {
 			var vs y.ValueStruct
 			rand := rand.New(rand.NewSource(0))
 			for bn := 0; bn < b.N; bn++ {
-				rand.Seed(0)
-				for i := 0; i < n; i++ {
-					k := keys[rand.Intn(n)]
-					it := tbl.NewIteratorNoRef(false)
-					it.Seek(k)
-					if !it.Valid() {
-						continue
-					}
-					if !y.SameKey(k, it.Key()) {
-						continue
-					}
-					vs = it.Value()
+				k := keys[rand.Intn(n)]
+				it := tbl.NewIteratorNoRef(false)
+				it.Seek(k)
+				if !it.Valid() {
+					continue
 				}
+				if !y.SameKey(k, it.Key()) {
+					continue
+				}
+				vs = it.Value()
 			}
 			_ = vs
 		})
@@ -822,22 +821,19 @@ func BenchmarkPointGet(b *testing.B) {
 			)
 			rand := rand.New(rand.NewSource(0))
 			for bn := 0; bn < b.N; bn++ {
-				rand.Seed(0)
-				for i := 0; i < n; i++ {
-					k := keys[rand.Intn(n)]
+				k := keys[rand.Intn(n)]
 
-					resultKey, resultVs, ok = tbl.PointGet(k)
-					if !ok {
-						it := tbl.NewIteratorNoRef(false)
-						it.Seek(k)
-						if !it.Valid() {
-							continue
-						}
-						if !y.SameKey(k, it.Key()) {
-							continue
-						}
-						resultKey, resultVs = it.Key(), it.Value()
+				resultKey, resultVs, ok = tbl.PointGet(k)
+				if !ok {
+					it := tbl.NewIteratorNoRef(false)
+					it.Seek(k)
+					if !it.Valid() {
+						continue
 					}
+					if !y.SameKey(k, it.Key()) {
+						continue
+					}
+					resultKey, resultVs = it.Key(), it.Value()
 				}
 			}
 			_, _ = resultKey, resultVs
