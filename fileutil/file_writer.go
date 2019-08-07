@@ -38,6 +38,10 @@ func (bw *BufferedFileWriter) Append(data []byte) error {
 	return bw.appendData(data, true)
 }
 
+func (bw *BufferedFileWriter) Write(p []byte) (n int, err error) {
+	return len(p), bw.Append(p)
+}
+
 // Flush data in buffer to disk.
 // If fsync is true, it will do a Fdatasync, otherwise it will try to do a SyncFileRange.
 func (bw *BufferedFileWriter) Flush(fsync bool) error {

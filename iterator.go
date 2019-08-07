@@ -314,16 +314,7 @@ func (opts *IteratorOptions) OverlapTable(t *table.Table) bool {
 	if y.CompareKeysWithVer(opts.startKeyWithTS, t.Biggest()) > 0 {
 		return false
 	}
-	iter := t.NewIterator(false)
-	defer iter.Close()
-	iter.Seek(opts.startKeyWithTS)
-	if !iter.Valid() {
-		return false
-	}
-	if y.CompareKeysWithVer(iter.Key(), opts.endKeyWithTS) >= 0 {
-		return false
-	}
-	return true
+	return t.OverlapRange(opts.StartKey, opts.EndKey)
 }
 
 func (opts *IteratorOptions) OverlapTables(tables []*table.Table) []*table.Table {

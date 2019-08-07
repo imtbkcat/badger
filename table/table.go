@@ -26,9 +26,9 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/bobotu/myk/surf"
 	"github.com/coocood/badger/options"
 	"github.com/coocood/badger/y"
-	"github.com/coocood/bbloom"
 	"github.com/pingcap/errors"
 )
 
@@ -54,9 +54,7 @@ type Table struct {
 	smallest, biggest []byte // Smallest and largest keys.
 	id                uint64 // file id, part of filename
 
-	bf bbloom.Bloom
-
-	hIdx hashIndex
+	surf surf.SuRF
 }
 
 // IncrRef increments the refcount (having to do with whether the file should be deleted)
@@ -170,16 +168,13 @@ func (t *Table) Close() error {
 // If the hash index does not contain such an element the returned key will be nil.
 func (t *Table) PointGet(key []byte) ([]byte, y.ValueStruct, bool) {
 	keyNoTS := y.ParseKey(key)
-	blkIdx, offset := t.hIdx.lookup(keyNoTS)
-	if blkIdx == resultFallback {
-		return nil, y.ValueStruct{}, false
-	}
-	if blkIdx == resultNoEntry {
+	blkIdx, ok := t.surf.Get(keyNoTS)
+	if !ok {
 		return nil, y.ValueStruct{}, true
 	}
 
 	it := t.NewIteratorNoRef(false)
-	it.seekFromOffset(int(blkIdx), int(offset), key)
+	it.seekFromOffset(int(blkIdx), 0, key)
 
 	if !it.Valid() || !y.SameKey(key, it.Key()) {
 		return nil, y.ValueStruct{}, true
@@ -213,21 +208,9 @@ func (t *Table) readIndex() {
 
 	readPos -= 4
 	buf := t.readNoFail(readPos, 4)
-	numBuckets := int(bytesToU32(buf))
-	if numBuckets != 0 {
-		hashLen := numBuckets * 3
-		readPos -= hashLen
-		buckets := t.readNoFail(readPos, hashLen)
-		t.hIdx.readIndex(buckets, numBuckets)
-	}
-
-	// Read bloom filter.
-	readPos -= 4
-	buf = t.readNoFail(readPos, 4)
-	bloomLen := int(bytesToU32(buf))
-	readPos -= bloomLen
-	data := t.readNoFail(readPos, bloomLen)
-	t.bf.BinaryUnmarshal(data)
+	surfSize := int(bytesToU32(buf))
+	readPos -= surfSize
+	t.surf.Unmarshal(t.readNoFail(readPos, surfSize))
 
 	readPos -= 4
 	buf = t.readNoFail(readPos, 4)
@@ -298,9 +281,7 @@ func (t *Table) Filename() string { return t.fd.Name() }
 // ID is the table's ID number (used to make the file name).
 func (t *Table) ID() uint64 { return t.id }
 
-// DoesNotHave returns true if (but not "only if") the table does not have the key.  It does a
-// bloom filter lookup.
-func (t *Table) DoesNotHave(key []byte) bool { return !t.bf.Has(key) }
+func (t *Table) OverlapRange(start, end []byte) bool { return t.surf.HasRange(start, end) }
 
 // ParseFileID reads the file id out of a filename.
 func ParseFileID(name string) (uint64, bool) {

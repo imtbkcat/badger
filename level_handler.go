@@ -322,9 +322,6 @@ func (s *levelHandler) getInTables(key []byte, tables []*table.Table, refs RefMa
 }
 
 func (s *levelHandler) getInTable(key []byte, table *table.Table) (result y.ValueStruct) {
-	if table.DoesNotHave(y.ParseKey(key)) {
-		return
-	}
 	resultKey, resultVs, ok := table.PointGet(key)
 	if !ok {
 		it := table.NewIteratorNoRef(false)

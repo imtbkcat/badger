@@ -18,15 +18,16 @@ package table
 
 import (
 	"encoding/binary"
-	"github.com/coocood/badger/fileutil"
-	"github.com/coocood/badger/options"
-	"golang.org/x/time/rate"
 	"os"
 	"reflect"
 	"unsafe"
 
+	"github.com/bobotu/myk/surf"
+	"github.com/coocood/badger/fileutil"
+	"github.com/coocood/badger/options"
+	"golang.org/x/time/rate"
+
 	"github.com/coocood/badger/y"
-	"github.com/coocood/bbloom"
 )
 
 const restartInterval = 256 // Might want to change this to be based on total size instead of numKeys.
@@ -70,10 +71,7 @@ type Builder struct {
 	// The offsets are relative to the start of the block.
 	entryEndOffsets []uint32
 
-	bloomFilter bbloom.Bloom
-
-	enableHashIndex  bool
-	hashIndexBuilder hashIndexBuilder
+	surfBuilder *surf.Builder
 }
 
 // NewTableBuilder makes a new TableBuilder.
@@ -84,10 +82,7 @@ func NewTableBuilder(f *os.File, limiter *rate.Limiter, opt options.TableBuilder
 		w:           fileutil.NewBufferedFileWriter(f, opt.WriteBufferSize, opt.BytesPerSync, limiter),
 		buf:         make([]byte, 0, 4*1024),
 		baseKeysBuf: make([]byte, 0, assumeKeyNum/restartInterval),
-		// assume a large enough num of keys to init bloom filter.
-		bloomFilter:      bbloom.New(float64(assumeKeyNum), 0.01),
-		enableHashIndex:  opt.EnableHashIndex,
-		hashIndexBuilder: newHashIndexBuilder(opt.HashUtilRatio),
+		surfBuilder: surf.NewBuilder(surf.HashSuffix, 4, 0),
 	}
 }
 
@@ -113,8 +108,8 @@ func (b *Builder) resetBuffers() {
 	b.blockBaseOffset = 0
 	b.blockEndOffsets = b.blockEndOffsets[:0]
 	b.entryEndOffsets = b.entryEndOffsets[:0]
-	b.bloomFilter.Clear()
-	b.hashIndexBuilder.reset()
+	// TODO: reuse surf builder.
+	b.surfBuilder = surf.NewBuilder(surf.HashSuffix, 4, 0)
 }
 
 // Close closes the TableBuilder.
@@ -137,10 +132,7 @@ func (b *Builder) addHelper(key []byte, v y.ValueStruct) {
 	// Add key to bloom filter.
 	if len(key) > 0 {
 		keyNoTs := y.ParseKey(key)
-		b.bloomFilter.Add(keyNoTs)
-		if b.enableHashIndex {
-			b.hashIndexBuilder.addKey(keyNoTs, uint32(len(b.baseKeysEndOffs)), uint8(b.counter))
-		}
+		b.surfBuilder.Add(keyNoTs, uint16(len(b.baseKeysEndOffs)))
 	}
 
 	// diffKey stores the difference of key with blockBaseKey.
@@ -221,18 +213,16 @@ func (b *Builder) Finish() error {
 	b.buf = append(b.buf, u32SliceToBytes(b.baseKeysEndOffs)...)
 	b.buf = append(b.buf, u32ToBytes(uint32(len(b.baseKeysEndOffs)))...)
 
-	// Write bloom filter.
-	bfData := b.bloomFilter.BinaryMarshal()
-	b.buf = append(b.buf, bfData...)
-	b.buf = append(b.buf, u32ToBytes(uint32(len(bfData)))...)
-
-	if b.enableHashIndex {
-		b.buf = b.hashIndexBuilder.finish(b.buf)
-	} else {
-		b.buf = append(b.buf, u32ToBytes(0)...)
+	if err := b.w.Append(b.buf); err != nil {
+		return err
 	}
 
-	return b.w.FlushWithData(b.buf, true)
+	s := b.surfBuilder.Finish()
+	if err := s.WriteTo(b.w); err != nil {
+		return err
+	}
+
+	return b.w.FlushWithData(u32ToBytes(uint32(s.MarshalSize())), true)
 }
 
 func u32ToBytes(v uint32) []byte {
