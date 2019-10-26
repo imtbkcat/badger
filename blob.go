@@ -293,7 +293,7 @@ type blobManager struct {
 	maxFileID         uint32
 }
 
-func (bm *blobManager) Open(kv *DB, opt Options, ) error {
+func (bm *blobManager) Open(kv *DB, opt Options) error {
 	bm.physicalFiles = map[uint32]*blobFile{}
 	bm.dirPath = opt.ValueDir
 	bm.kv = kv

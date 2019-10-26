@@ -36,7 +36,7 @@ type Options struct {
 
 	RemoteDir        string
 	RemoteLevelStart int
-	MaxSize  int
+	MaxSize          int
 
 	// Directory to store the value log in. Can be the same as Dir. Should
 	// exist and be writable.
