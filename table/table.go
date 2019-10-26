@@ -19,6 +19,11 @@ package table
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/coocood/badger/fileutil"
+	"github.com/coocood/badger/options"
+	"github.com/coocood/badger/y"
+	"github.com/coocood/bbloom"
+	"github.com/pingcap/errors"
 	"math"
 	"os"
 	"path"
@@ -27,12 +32,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-
-	"github.com/coocood/badger/fileutil"
-	"github.com/coocood/badger/options"
-	"github.com/coocood/badger/y"
-	"github.com/coocood/bbloom"
-	"github.com/pingcap/errors"
 )
 
 const fileSuffix = ".sst"
@@ -44,6 +43,7 @@ type Table struct {
 	fd        *os.File // Own fd.
 	tableSize int      // Initialized in OpenTable, using fd.Stat().
 
+	filename string
 	globalTs        uint64
 	blockEndOffsets []uint32
 	baseKeys        []byte
@@ -60,6 +60,41 @@ type Table struct {
 
 	bf   bbloom.Bloom
 	hIdx hashIndex
+}
+
+func (t *Table) CacheID() string {
+	return t.fd.Name()
+}
+
+func (t *Table) Deallocate() error {
+	err := y.Munmap(t.mmap)
+	if err != nil {
+		return err
+	}
+	t.blockEndOffsets = nil
+	t.baseKeys = nil
+	t.baseKeysEndOffs = nil
+	err = t.fd.Close()
+	return err
+}
+
+func (t *Table) Init() error  {
+	// set flag
+	// open file
+	var err error
+	t.fd, err = os.OpenFile(t.filename, os.O_RDWR, 0666)
+	if err != nil {
+		return err
+	}
+	fileInfo, err := t.fd.Stat()
+	if err != nil {
+		return err
+	}
+	t.mmap, err = y.Mmap(t.fd, false, fileInfo.Size())
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // IncrRef increments the refcount (having to do with whether the file should be deleted)
@@ -357,10 +392,10 @@ func NewFilename(id uint64, dir string) string {
 }
 
 func (t *Table) loadToRAM() error {
-	t.mmap = make([]byte, t.tableSize)
-	read, err := t.fd.ReadAt(t.mmap, 0)
-	if err != nil || read != t.tableSize {
-		return y.Wrapf(err, "Unable to load file in memory. Table file: %s", t.Filename())
-	}
+//	t.mmap = make([]byte, t.tableSize)
+//	read, err := t.fd.ReadAt(t.mmap, 0)
+//	if err != nil || read != t.tableSize {
+//		return y.Wrapf(err, "Unable to load file in memory. Table file: %s", t.Filename())
+//	}
 	return nil
 }
