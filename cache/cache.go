@@ -6,7 +6,7 @@ import (
 )
 
 type CacheEntry interface {
-	ID() string
+	CacheID() string
 	Deallocate() error
 	Init() error
 }
@@ -26,7 +26,7 @@ type CacheEntryImpl struct{
 	id string
 }
 
-func (entry CacheEntryImpl) ID() string {
+func (entry CacheEntryImpl) CacheID() string {
 	return entry.id
 }
 
