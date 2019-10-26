@@ -70,6 +70,22 @@ type blobFile struct {
 
 	// only accessed by gcHandler
 	totalDiscard uint32
+	isRemote     bool
+}
+
+func (bf *blobFile) CacheID() string {
+	return bf.fd.Name()
+}
+
+func (bf *blobFile) Deallocate() error {
+	y.Munmap(bf.mmap)
+	bf.mappingEntries = nil
+	bf.fd.Close()
+	return nil
+}
+
+func (bf *blobFile) Init() error {
+	return nil
 }
 
 func (bf *blobFile) Init() error {
@@ -131,6 +147,7 @@ func (bf *blobFile) loadDiscards() error {
 }
 
 func (bf *blobFile) read(bp blobPointer, s *y.Slice) (buf []byte, err error) {
+	// pin
 	physicalOff := int64(bf.getPhysicalOffset(bp.logicalAddr))
 	buf = s.Resize(int(bp.length))
 	_, err = bf.fd.ReadAt(buf, physicalOff) // skip the 4 bytes length.
@@ -164,6 +181,7 @@ func (bf *blobFile) decrRef() {
 		os.Remove(bf.path)
 		bf.manager.Free(bf.path)
 	}
+	// if ref = 1 unpin
 }
 
 type blobFileBuilder struct {
@@ -176,6 +194,7 @@ type blobFileBuilder struct {
 func newBlobFileBuilder(fid uint32, isRemote bool, dir string, writeBufferSize int) (*blobFileBuilder, error) {
 	fileName := newBlobFileName(fid, dir)
 	file, err := directio.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0666)
+	// call cache manager to add.
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +293,7 @@ type blobManager struct {
 	maxFileID         uint32
 }
 
-func (bm *blobManager) Open(kv *DB, opt Options) error {
+func (bm *blobManager) Open(kv *DB, opt Options, ) error {
 	bm.physicalFiles = map[uint32]*blobFile{}
 	bm.dirPath = opt.ValueDir
 	bm.kv = kv

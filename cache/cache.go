@@ -44,7 +44,7 @@ type CacheManager interface {
 	Release(id string) error
 }
 
-type CacheEntryImpl struct{
+type CacheEntryImpl struct {
 	id string
 	pinned int
 	inLocal bool
@@ -316,4 +316,3 @@ func (mgr *CacheManagerImpl) Release(id string) error {
 	entry := value.(CacheEntry)
 	return entry.Unpin()
 }
-

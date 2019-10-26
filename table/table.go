@@ -19,12 +19,6 @@ package table
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/coocood/badger/fileutil"
-	"github.com/coocood/badger/options"
-	"github.com/coocood/badger/surf"
-	"github.com/coocood/badger/y"
-	"github.com/coocood/bbloom"
-	"github.com/pingcap/errors"
 	"math"
 	"os"
 	"path"
@@ -33,6 +27,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/coocood/badger/fileutil"
+	"github.com/coocood/badger/options"
+	"github.com/coocood/badger/surf"
+	"github.com/coocood/badger/y"
+	"github.com/coocood/bbloom"
+	"github.com/pingcap/errors"
 )
 
 const fileSuffix = ".sst"

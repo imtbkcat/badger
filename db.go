@@ -18,6 +18,7 @@ package badger
 
 import (
 	"bytes"
+	"github.com/coocood/badger/cache"
 	"github.com/coocood/badger/protos"
 	"io"
 	"math"
@@ -84,6 +85,8 @@ type DB struct {
 	vlogSize int64
 
 	blobManger blobManager
+
+	cacheManger cache.CacheManager
 }
 
 const (
@@ -252,6 +255,7 @@ func Open(opt Options) (db *DB, err error) {
 		valueDirGuard: valueDirLockGuard,
 		orc:           orc,
 		metrics:       y.NewMetricSet(opt.Dir),
+		cacheManger:   cache.NewCacheManager(opt.RemoteDir, opt.MaxSize)
 	}
 	db.vlog.metrics = db.metrics
 

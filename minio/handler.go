@@ -7,12 +7,12 @@ import (
 )
 
 type MinioClient struct {
-	Endpoint string
-	AccessKeyID string
+	Endpoint        string
+	AccessKeyID     string
 	SecretAccessKey string
-	BucketName string
-	Location string
-	MinioCli *minio.Client
+	BucketName      string
+	Location        string
+	MinioCli        *minio.Client
 }
 
 type IMinioClient interface {
@@ -34,12 +34,12 @@ func InitMinioClient() IMinioClient {
 		log.Fatalln(err)
 	}
 	return &MinioClient{
-		Endpoint: endpoint,
-		AccessKeyID : accessKeyID,
-		SecretAccessKey : secretAccessKey,
-		BucketName : bucketName,
-		Location : location,
-		MinioCli : newMinioClient,
+		Endpoint:        endpoint,
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretAccessKey,
+		BucketName:      bucketName,
+		Location:        location,
+		MinioCli:        newMinioClient,
 	}
 }
 
