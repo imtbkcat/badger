@@ -4,6 +4,7 @@ import (
 	"github.com/coocood/badger/minio"
 	"log"
 )
+
 func main() {
 	minioClient := minio.InitMinioClient()
 	for i:=0; i<100 ; i++ {

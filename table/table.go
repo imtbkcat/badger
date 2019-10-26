@@ -19,12 +19,7 @@ package table
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/coocood/badger/fileutil"
-	"github.com/coocood/badger/options"
-	"github.com/coocood/badger/surf"
-	"github.com/coocood/badger/y"
-	"github.com/coocood/bbloom"
-	"github.com/pingcap/errors"
+	"github.com/coocood/badger/cache"
 	"math"
 	"os"
 	"path"
@@ -33,6 +28,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/coocood/badger/fileutil"
+	"github.com/coocood/badger/options"
+	"github.com/coocood/badger/surf"
+	"github.com/coocood/badger/y"
+	"github.com/coocood/bbloom"
+	"github.com/pingcap/errors"
 )
 
 const fileSuffix = ".sst"
@@ -41,8 +43,9 @@ const fileSuffix = ".sst"
 type Table struct {
 	sync.Mutex
 
-	fd        *os.File // Own fd.
-	tableSize int      // Initialized in OpenTable, using fd.Stat().
+	fd           *os.File // Own fd.
+	tableSize    int      // Initialized in OpenTable, using fd.Stat().
+	cacheManager cache.CacheManager
 
 	filename        string
 	globalTs        uint64
@@ -112,7 +115,7 @@ func (t *Table) IncrRef() {
 func (t *Table) DecrRef() error {
 	newRef := atomic.AddInt32(&t.ref, -1)
 	if newRef == 1 && t.IsRemote() {
-		// TODO: release file
+		t.cacheManager.Release(t.filename)
 	}
 	if newRef == 0 {
 		// We can safely delete this file, because for all the current files, we always have
@@ -137,6 +140,8 @@ func (t *Table) DecrRef() error {
 			y.Munmap(t.remoteIndex)
 			t.remoteIndexFd.Close()
 		}
+
+		t.cacheManager.Free(filename)
 	}
 	return nil
 }
@@ -150,11 +155,18 @@ type block struct {
 // entry.  Returns a table with one reference count on it (decrementing which may delete the file!
 // -- consider t.Close() instead).  The fd has to writeable because we call Truncate on it before
 // deleting.
-func OpenTable(filename string, isRemote bool, loadingMode options.FileLoadingMode) (*Table, error) {
+func OpenTable(filename string, isRemote bool, loadingMode options.FileLoadingMode, manager cache.CacheManager) (*Table, error) {
+	var t *Table
+	var err error
 	if isRemote {
-		return openRemoteFile(filename, loadingMode)
+		t, err = openRemoteFile(filename, loadingMode)
+	} else {
+		t, err = openLocalFile(filename, loadingMode)
 	}
-	return openLocalFile(filename, loadingMode)
+	if err != nil {
+		t.cacheManager = manager
+	}
+	return t, err
 }
 
 func openRemoteFile(filename string, loadingMode options.FileLoadingMode) (*Table, error) {
@@ -291,6 +303,7 @@ func (t *Table) PointGet(key []byte, keyHash uint64) ([]byte, y.ValueStruct, boo
 		blkIdx = uint32(indexEntry.blockIdx)
 		offset = indexEntry.offset
 		// TODO: Pin
+		t.cacheManager.Pin(t.filename)
 	} else {
 		blkIdx, offset = t.hIdx.lookup(keyHash)
 		if blkIdx == resultFallback {

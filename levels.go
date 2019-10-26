@@ -118,10 +118,14 @@ func newLevelsController(kv *DB, mf *Manifest, opt options.TableBuilderOptions) 
 			flags |= y.ReadOnly
 		}
 
-		t, err := table.OpenTable(fname, int(level) >= kv.opt.RemoteLevelStart, kv.opt.TableLoadingMode)
+		isRemote := int(level) >= kv.opt.RemoteLevelStart
+		t, err := table.OpenTable(fname, isRemote, kv.opt.TableLoadingMode, kv.cacheManger)
 		if err != nil {
 			closeAllTables(tables)
 			return nil, errors.Wrapf(err, "Opening table: %q", fname)
+		}
+		if isRemote {
+			kv.cacheManger.Add(fname, t, true)
 		}
 
 		tables[level] = append(tables[level], t)
@@ -496,10 +500,11 @@ func (lc *levelsController) compactBuildTables(level int, cd compactDef,
 		fd.Close()
 		var tbl *table.Table
 		// TODO: may have problem with cache manager.
-		tbl, err = table.OpenTable(fileName, isRemote, lc.kv.opt.TableLoadingMode)
+		tbl, err = table.OpenTable(fileName, isRemote, lc.kv.opt.TableLoadingMode, lc.kv.cacheManger)
 		if err != nil {
 			return
 		}
+
 		if len(tbl.Smallest()) == 0 {
 			tbl.DecrRef()
 		} else {

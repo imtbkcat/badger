@@ -44,10 +44,11 @@ type CacheManager interface {
 	Release(id string) error
 }
 
-type CacheEntryImpl struct{
-	id string
-	pinned int
-	inLocal bool
+type CacheEntryImpl struct {
+	userEntry CacheEntry
+	id       string
+	pinned   int
+	inLocal  bool
 	fileSize int
 }
 
@@ -61,7 +62,6 @@ func (entry *CacheEntryImpl) CacheSize() int {
 
 func (entry *CacheEntryImpl) SetInLocal(inLocal bool) {
 	entry.inLocal = inLocal
-
 }
 
 func (entry *CacheEntryImpl) CacheID() string {
@@ -95,7 +95,7 @@ func (entry *CacheEntryImpl) Init() error {
 	return nil
 }
 
-type CacheManagerImpl struct{
+type CacheManagerImpl struct {
 	// file dir, fileDir + id = filePath
 	fileDir string
 	// max files in cache manager
@@ -132,10 +132,10 @@ func NewCacheManager(fileDir string, maxSize int) CacheManager {
 	}
 	client := InitMinioClient()
 	mgr := &CacheManagerImpl{
-		fileDir: fileDir,
-		maxSize: maxSize,
+		fileDir:     fileDir,
+		maxSize:     maxSize,
 		minioclient: client,
-		cache: cache,
+		cache:       cache,
 	}
 	return mgr
 }
@@ -158,7 +158,7 @@ func (mgr *CacheManagerImpl) getEntry(id string) (CacheEntry, error) {
 }
 
 func (mgr *CacheManagerImpl) ensureFileSize(newSize int) error {
-	for mgr.localSize+ newSize > mgr.maxSize {
+	for mgr.localSize+newSize > mgr.maxSize {
 		_, value, ok := mgr.cache.GetOldestCanEvict()
 		if !ok {
 			return errors.Errorf("cache full")
@@ -194,7 +194,7 @@ func (mgr *CacheManagerImpl) uploadRemoteFile(id string) error {
 }
 
 func (mgr *CacheManagerImpl) downloadRemoteFile(id string) error {
-	entry, err:= mgr.getEntry(id)
+	entry, err := mgr.getEntry(id)
 	if err != nil {
 		return err
 	}
@@ -316,4 +316,3 @@ func (mgr *CacheManagerImpl) Release(id string) error {
 	entry := value.(CacheEntry)
 	return entry.Unpin()
 }
-
