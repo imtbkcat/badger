@@ -19,9 +19,9 @@ package table
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/coocood/badger/surf"
 	"github.com/coocood/badger/fileutil"
 	"github.com/coocood/badger/options"
+	"github.com/coocood/badger/surf"
 	"github.com/coocood/badger/y"
 	"github.com/coocood/bbloom"
 	"github.com/pingcap/errors"
@@ -105,16 +105,13 @@ func (t *Table) Init() error {
 
 // IncrRef increments the refcount (having to do with whether the file should be deleted)
 func (t *Table) IncrRef() {
-	if t.surf != nil {
-		// TODO: pin file
-	}
 	atomic.AddInt32(&t.ref, 1)
 }
 
 // DecrRef decrements the refcount and possibly deletes the table
 func (t *Table) DecrRef() error {
 	newRef := atomic.AddInt32(&t.ref, -1)
-	if newRef == 1 {
+	if newRef == 1 && t.IsRemote() {
 		// TODO: release file
 	}
 	if newRef == 0 {
@@ -293,6 +290,7 @@ func (t *Table) PointGet(key []byte, keyHash uint64) ([]byte, y.ValueStruct, boo
 		indexEntry.FromBytes(v)
 		blkIdx = uint32(indexEntry.blockIdx)
 		offset = indexEntry.offset
+		// TODO: Pin
 	} else {
 		blkIdx, offset = t.hIdx.lookup(keyHash)
 		if blkIdx == resultFallback {
@@ -450,6 +448,15 @@ func (t *Table) ID() uint64 { return t.id }
 // DoesNotHave returns true if (but not "only if") the table does not have the key.  It does a
 // bloom filter lookup.
 func (t *Table) DoesNotHave(keyHash uint64) bool { return !t.bf.Has(keyHash) }
+
+func (t *Table) IsRemote() bool { return t.surf != nil }
+
+func (t *Table) HaveRange(start, end []byte) bool {
+	if t.surf == nil {
+		return true
+	}
+	return t.surf.HasRange(start, end)
+}
 
 // ParseFileID reads the file id out of a filename.
 func ParseFileID(name string) (uint64, bool) {

@@ -47,6 +47,9 @@ func (s *SuRF) HasRange(start, end []byte) bool {
 	if !it.Valid() {
 		return false
 	}
+	if len(end) == 0 {
+		return true
+	}
 	cmp := it.compare(end)
 	if cmp == couldBePositive {
 		return true

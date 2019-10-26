@@ -210,6 +210,9 @@ func (opts *IteratorOptions) OverlapTable(t *table.Table) bool {
 	if y.CompareKeysWithVer(opts.startKeyWithTS, t.Biggest()) > 0 {
 		return false
 	}
+	if t.IsRemote() {
+		return t.HaveRange(opts.StartKey, opts.EndKey)
+	}
 	iter := t.NewIterator(false)
 	defer iter.Close()
 	iter.Seek(opts.startKeyWithTS)
