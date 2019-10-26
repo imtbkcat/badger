@@ -10,7 +10,7 @@ func main() {
 	//endpoint := "play.min.io"
 	endpoint := "0.0.0.0:9000"
 	accessKeyID := "AKIAIOSFODNN7EXAMPLE"
-	secretAccessKey := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKE"
+	secretAccessKey := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 	useSSL := false
 
 	// Initialize minio client object.
