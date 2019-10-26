@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/coocood/badger/cache"
 	"github.com/coocood/badger/fileutil"
 	"github.com/coocood/badger/y"
 	"github.com/ncw/directio"
@@ -65,8 +66,30 @@ type blobFile struct {
 	mmap           []byte
 	mappingEntries []mappingEntry
 
+	manager cache.CacheManager
+
 	// only accessed by gcHandler
 	totalDiscard uint32
+}
+
+func (bf *blobFile) Init() error {
+	file, err := os.OpenFile(bf.path, os.O_RDWR, 0666)
+	if err != nil {
+		return err
+	}
+	bf.fd = file
+	err = bf.loadOffsetMap()
+	if err != nil {
+		return err
+	}
+	return bf.loadDiscards()
+}
+
+func (bf *blobFile) Deallocate() error {
+	y.Munmap(bf.mmap)
+	bf.mmap = nil
+	bf.mappingEntries = nil
+	return bf.fd.Close()
 }
 
 func (bf *blobFile) getID() uint32 {
@@ -130,22 +153,27 @@ func (bf *blobFile) incrRef() {
 }
 
 func (bf *blobFile) decrRef() {
-	if atomic.AddInt32(&bf.ref, -1) == 0 {
+	new := atomic.AddInt32(&bf.ref, -1)
+	if new == 1 {
+		bf.manager.Release(bf.path)
+	} else if new == 0 {
 		if bf.mmap != nil {
 			y.Munmap(bf.mmap)
 		}
 		bf.fd.Close()
 		os.Remove(bf.path)
+		bf.manager.Free(bf.path)
 	}
 }
 
 type blobFileBuilder struct {
-	fid    uint32
-	file   *os.File
-	writer *fileutil.DirectWriter
+	fid      uint32
+	file     *os.File
+	writer   *fileutil.DirectWriter
+	isRemote bool
 }
 
-func newBlobFileBuilder(fid uint32, dir string, writeBufferSize int) (*blobFileBuilder, error) {
+func newBlobFileBuilder(fid uint32, isRemote bool, dir string, writeBufferSize int) (*blobFileBuilder, error) {
 	fileName := newBlobFileName(fid, dir)
 	file, err := directio.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
@@ -194,10 +222,17 @@ func (bfb *blobFileBuilder) finish() (*blobFile, error) {
 		return nil, err
 	}
 	_ = bfb.file.Close()
-	return newBlobFile(bfb.file.Name(), bfb.fid, uint32(bfb.writer.Offset()))
+	return newBlobFile(bfb.file.Name(), bfb.fid, uint32(bfb.writer.Offset()), bfb.isRemote)
 }
 
-func newBlobFile(path string, fid, fileSize uint32) (*blobFile, error) {
+func newBlobFile(path string, fid, fileSize uint32, isRemote bool) (*blobFile, error) {
+	if isRemote {
+		return openRemoteBlobFile(path, fid, fileSize)
+	}
+	return openLocalBlobFile(path, fid, fileSize)
+}
+
+func openLocalBlobFile(path string, fid, fileSize uint32) (*blobFile, error) {
 	file, err := os.OpenFile(path, os.O_RDWR, 0666)
 	if err != nil {
 		return nil, err
@@ -210,6 +245,15 @@ func newBlobFile(path string, fid, fileSize uint32) (*blobFile, error) {
 		path:     path,
 		fid:      fid,
 		fd:       file,
+		fileSize: fileSize,
+		ref:      1,
+	}, nil
+}
+
+func openRemoteBlobFile(path string, fid, fileSize uint32) (*blobFile, error) {
+	return &blobFile{
+		path:     path,
+		fid:      fid,
 		fileSize: fileSize,
 		ref:      1,
 	}, nil
@@ -260,17 +304,20 @@ func (bm *blobManager) Open(kv *DB, opt Options) error {
 		if _, ok := bm.physicalFiles[fid]; ok {
 			return errors.Errorf("Found the same blob file twice: %d", fid)
 		}
-		blobFile, err := newBlobFile(path, fid, uint32(fileInfo.Size()))
+		isRemote := true
+		blobFile, err := newBlobFile(path, fid, uint32(fileInfo.Size()), isRemote)
 		if err != nil {
 			return err
 		}
-		err = blobFile.loadOffsetMap()
-		if err != nil {
-			return err
-		}
-		err = blobFile.loadDiscards()
-		if err != nil {
-			return err
+		if isRemote {
+			err = blobFile.loadOffsetMap()
+			if err != nil {
+				return err
+			}
+			err = blobFile.loadDiscards()
+			if err != nil {
+				return err
+			}
 		}
 		bm.physicalFiles[fid] = blobFile
 	}
@@ -564,6 +611,7 @@ func (h *blobGCHandler) doGCIfNeeded() error {
 	}
 	var validEntries []validEntry
 	for _, blobFile := range oldFiles {
+		blobFile.manager.Pin(blobFile.path)
 		blobBytes, err := ioutil.ReadFile(blobFile.path)
 		if err != nil {
 			return err
@@ -726,6 +774,7 @@ type blobCache struct {
 const cacheSize = 64 * 1024
 
 func (bc *blobCache) read(bp blobPointer, slice *y.Slice) ([]byte, error) {
+	bc.file.manager.Pin(bc.file.path)
 	physicalOffset := bc.file.getPhysicalOffset(bp.logicalAddr)
 	lastPhysical := bc.lastPhysical
 	bc.lastPhysical = physicalOffset
