@@ -77,17 +77,6 @@ func (bf *blobFile) CacheID() string {
 	return bf.fd.Name()
 }
 
-func (bf *blobFile) Deallocate() error {
-	y.Munmap(bf.mmap)
-	bf.mappingEntries = nil
-	bf.fd.Close()
-	return nil
-}
-
-func (bf *blobFile) Init() error {
-	return nil
-}
-
 func (bf *blobFile) Init() error {
 	file, err := os.OpenFile(bf.path, os.O_RDWR, 0666)
 	if err != nil {
