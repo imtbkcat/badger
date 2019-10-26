@@ -70,5 +70,6 @@ func (service *MinioClient) RMObject(objectName string) error {
 		log.Fatalln(err)
 		return err
 	}
+	log.Println("MINIO CLIENT: Success on RMObject", objectName)
 	return nil
 }
