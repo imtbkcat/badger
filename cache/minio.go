@@ -43,10 +43,14 @@ func InitMinioClient() IMinioClient {
 	}
 }
 
+func loggingStatus(service *MinioClient, function string, err error) {
+	log.Println("MINIO CLIENT: error: ", err, ", doing:", function, ", Status:" , service)
+}
+
 func (service *MinioClient) GetObject(objectName, filePath string) error {
 	err := service.MinioCli.FGetObject(service.BucketName, objectName, filePath, minio.GetObjectOptions{})
 	if err != nil {
-		log.Fatalln(err)
+		loggingStatus(service, "GetObject", err)
 		return err
 	}
 
@@ -57,7 +61,7 @@ func (service *MinioClient) GetObject(objectName, filePath string) error {
 func (service *MinioClient) PutObject(objectName, filePath string) error {
 	n, err := service.MinioCli.FPutObject(service.BucketName, objectName, filePath, minio.PutObjectOptions{ContentType: "application/zip"})
 	if err != nil {
-		log.Fatalln(err)
+		loggingStatus(service, "PutObject", err)
 		return err
 	}
 	log.Println("MINIO CLIENT: Success on PutObject", objectName, filePath, n)
@@ -67,6 +71,7 @@ func (service *MinioClient) PutObject(objectName, filePath string) error {
 func (service *MinioClient) RMObject(objectName string) error {
 	err := service.MinioCli.RemoveObject(service.BucketName, objectName)
 	if err != nil {
+		loggingStatus(service, "RMObject", err)
 		log.Fatalln(err)
 		return err
 	}
