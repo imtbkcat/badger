@@ -378,7 +378,7 @@ func (db *DB) prepareExternalFiles(files []*os.File) ([]*table.Table, error) {
 			return nil, err
 		}
 
-		tbl, err := table.OpenTable(fd, db.opt.TableLoadingMode)
+		tbl, err := table.OpenTable(fd.Name(), false, db.opt.TableLoadingMode)
 		if err != nil {
 			return nil, err
 		}
@@ -729,7 +729,7 @@ func arenaSize(opt Options) int64 {
 func (db *DB) writeLevel0Table(s *table.MemTable, f *os.File, bb *blobFileBuilder) error {
 	iter := s.NewIterator(false)
 	defer iter.Close()
-	b := table.NewTableBuilder(f, db.limiter, 0, db.opt.TableBuilderOptions)
+	b := table.NewTableBuilder(f, db.limiter, 0, false, db.opt.TableBuilderOptions)
 	defer b.Close()
 	var numWrite, bytesWrite int
 	for iter.Rewind(); iter.Valid(); iter.Next() {
@@ -831,11 +831,7 @@ func (db *DB) runFlushMemTable(c *y.Closer) error {
 		}
 		atomic.StoreUint32(&db.syncedFid, ft.off.fid)
 		fd.Close()
-		fd, err = os.OpenFile(fileName, os.O_RDWR, 0666)
-		if err != nil {
-			return err
-		}
-		tbl, err := table.OpenTable(fd, db.opt.TableLoadingMode)
+		tbl, err := table.OpenTable(fileName, false, db.opt.TableLoadingMode)
 		if err != nil {
 			log.Infof("ERROR while opening table: %v", err)
 			return err

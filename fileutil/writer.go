@@ -27,6 +27,10 @@ type writer struct {
 	limiter  *rate.Limiter
 }
 
+func (w *writer) Name() string {
+	return w.fd.Name()
+}
+
 func NewBufferedWriter(fd *os.File, bufSize int, limiter *rate.Limiter) *BufferedWriter {
 	return &BufferedWriter{
 		writer: writer{

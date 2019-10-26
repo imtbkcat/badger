@@ -56,22 +56,22 @@ var (
 // listing.
 func revertToManifest(kv *DB, mf *Manifest, idMap map[uint64]struct{}) error {
 	// 1. Check all files in manifest exist.
-	for id := range mf.Tables {
-		if _, ok := idMap[id]; !ok {
-			return fmt.Errorf("file does not exist for table %d", id)
-		}
-	}
+	// for id := range mf.Tables {
+	// 	if _, ok := idMap[id]; !ok {
+	// 		return fmt.Errorf("file does not exist for table %d", id)
+	// 	}
+	// }
 
 	// 2. Delete files that shouldn't exist.
-	for id := range idMap {
-		if _, ok := mf.Tables[id]; !ok {
-			log.Infof("Table file %d not referenced in MANIFEST\n", id)
-			filename := table.NewFilename(id, kv.opt.Dir)
-			if err := os.Remove(filename); err != nil {
-				return y.Wrapf(err, "While removing table %d", id)
-			}
-		}
-	}
+	// for id := range idMap {
+	// 	if _, ok := mf.Tables[id]; !ok {
+	// 		log.Infof("Table file %d not referenced in MANIFEST\n", id)
+	// 		filename := table.NewFilename(id, kv.opt.Dir)
+	// 		if err := os.Remove(filename); err != nil {
+	// 			return y.Wrapf(err, "While removing table %d", id)
+	// 		}
+	// 	}
+	// }
 
 	return nil
 }
@@ -107,24 +107,23 @@ func newLevelsController(kv *DB, mf *Manifest, opt options.TableBuilderOptions) 
 	tables := make([][]*table.Table, kv.opt.TableBuilderOptions.MaxLevels)
 	var maxFileID uint64
 	for fileID, tableManifest := range mf.Tables {
-		fname := table.NewFilename(fileID, kv.opt.Dir)
+		level := tableManifest.Level
+		dir := kv.opt.Dir
+		if int(level) >= kv.opt.RemoteLevelStart {
+			dir = kv.opt.RemoteDir
+		}
+		fname := table.NewFilename(fileID, dir)
 		var flags uint32 = y.Sync
 		if kv.opt.ReadOnly {
 			flags |= y.ReadOnly
 		}
-		fd, err := y.OpenExistingFile(fname, flags)
-		if err != nil {
-			closeAllTables(tables)
-			return nil, errors.Wrapf(err, "Opening file: %q", fname)
-		}
 
-		t, err := table.OpenTable(fd, kv.opt.TableLoadingMode)
+		t, err := table.OpenTable(fname, int(level) >= kv.opt.RemoteLevelStart, kv.opt.TableLoadingMode)
 		if err != nil {
 			closeAllTables(tables)
 			return nil, errors.Wrapf(err, "Opening table: %q", fname)
 		}
 
-		level := tableManifest.Level
 		tables[level] = append(tables[level], t)
 
 		if fileID > maxFileID {
@@ -391,17 +390,24 @@ func (lc *levelsController) compactBuildTables(level int, cd compactDef,
 	var lastKey, skipKey []byte
 	var builder *table.Builder
 	var bytesRead, bytesWrite, numRead, numWrite int
+	isRemote := cd.nextLevel.level >= lc.kv.opt.RemoteLevelStart
+
 	for it.Valid() {
 		timeStart := time.Now()
 		fileID := lc.reserveFileID()
-		fileName := table.NewFilename(fileID, lc.kv.opt.Dir)
+		dir := lc.kv.opt.Dir
+		if isRemote {
+			dir = lc.kv.opt.RemoteDir
+		}
+		fileName := table.NewFilename(fileID, dir)
 		var fd *os.File
 		fd, err = directio.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0666)
 		if err != nil {
 			return
 		}
+
 		if builder == nil {
-			builder = table.NewTableBuilder(fd, limiter, cd.nextLevel.level, lc.opt)
+			builder = table.NewTableBuilder(fd, limiter, cd.nextLevel.level, cd.nextLevel.level >= lc.kv.opt.RemoteLevelStart, lc.opt)
 		} else {
 			builder.Reset(fd)
 		}
@@ -488,12 +494,9 @@ func (lc *levelsController) compactBuildTables(level int, cd compactDef,
 			return
 		}
 		fd.Close()
-		fd, err = os.OpenFile(fileName, os.O_RDWR, 0666)
-		if err != nil {
-			return
-		}
 		var tbl *table.Table
-		tbl, err = table.OpenTable(fd, lc.kv.opt.TableLoadingMode)
+		// TODO: may have problem with cache manager.
+		tbl, err = table.OpenTable(fileName, isRemote, lc.kv.opt.TableLoadingMode)
 		if err != nil {
 			return
 		}

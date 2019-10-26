@@ -19,6 +19,7 @@ package table
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/coocood/badger/surf"
 	"github.com/coocood/badger/fileutil"
 	"github.com/coocood/badger/options"
 	"github.com/coocood/badger/y"
@@ -43,7 +44,7 @@ type Table struct {
 	fd        *os.File // Own fd.
 	tableSize int      // Initialized in OpenTable, using fd.Stat().
 
-	filename string
+	filename        string
 	globalTs        uint64
 	blockEndOffsets []uint32
 	baseKeys        []byte
@@ -60,6 +61,10 @@ type Table struct {
 
 	bf   bbloom.Bloom
 	hIdx hashIndex
+
+	remoteIndex   []byte
+	remoteIndexFd *os.File
+	surf          *surf.SuRF
 }
 
 func (t *Table) CacheID() string {
@@ -78,7 +83,7 @@ func (t *Table) Deallocate() error {
 	return err
 }
 
-func (t *Table) Init() error  {
+func (t *Table) Init() error {
 	// set flag
 	// open file
 	var err error
@@ -94,17 +99,24 @@ func (t *Table) Init() error  {
 	if err != nil {
 		return err
 	}
+	t.readIndex()
 	return nil
 }
 
 // IncrRef increments the refcount (having to do with whether the file should be deleted)
 func (t *Table) IncrRef() {
+	if t.surf != nil {
+		// TODO: pin file
+	}
 	atomic.AddInt32(&t.ref, 1)
 }
 
 // DecrRef decrements the refcount and possibly deletes the table
 func (t *Table) DecrRef() error {
 	newRef := atomic.AddInt32(&t.ref, -1)
+	if newRef == 1 {
+		// TODO: release file
+	}
 	if newRef == 0 {
 		// We can safely delete this file, because for all the current files, we always have
 		// at least one reference pointing to them.
@@ -124,6 +136,10 @@ func (t *Table) DecrRef() error {
 		if err := os.Remove(filename); err != nil {
 			return err
 		}
+		if t.surf != nil {
+			y.Munmap(t.remoteIndex)
+			t.remoteIndexFd.Close()
+		}
 	}
 	return nil
 }
@@ -137,7 +153,65 @@ type block struct {
 // entry.  Returns a table with one reference count on it (decrementing which may delete the file!
 // -- consider t.Close() instead).  The fd has to writeable because we call Truncate on it before
 // deleting.
-func OpenTable(fd *os.File, loadingMode options.FileLoadingMode) (*Table, error) {
+func OpenTable(filename string, isRemote bool, loadingMode options.FileLoadingMode) (*Table, error) {
+	if isRemote {
+		return openRemoteFile(filename, loadingMode)
+	}
+	return openLocalFile(filename, loadingMode)
+}
+
+func openRemoteFile(filename string, loadingMode options.FileLoadingMode) (*Table, error) {
+	id, ok := ParseFileID(filename)
+	if !ok {
+		return nil, errors.Errorf("Invalid filename: %s", filename)
+	}
+
+	indexFile, err := os.Open(filename + ".idx")
+	if err != nil {
+		return nil, err
+	}
+	info, err := indexFile.Stat()
+	if err != nil {
+		return nil, err
+	}
+	data, err := y.Mmap(indexFile, false, info.Size())
+	if err != nil {
+		return nil, err
+	}
+
+	var cursor int
+	surfSize := int(bytesToU32(data[cursor : cursor+4]))
+	cursor += 4
+	surfData := data[cursor : cursor+surfSize]
+	cursor += surfSize
+	smallestLen := int(bytesToU32(data[cursor : cursor+4]))
+	cursor += 4
+	smallest := data[cursor : cursor+smallestLen]
+	cursor += smallestLen
+	biggestLen := int(bytesToU32(data[cursor : cursor+4]))
+	cursor += 4
+	biggest := data[cursor : cursor+biggestLen]
+
+	surf := new(surf.SuRF)
+	surf.Unmarshal(surfData)
+	return &Table{
+		filename:      filename,
+		ref:           1,
+		id:            id,
+		loadingMode:   loadingMode,
+		smallest:      y.KeyWithTs(smallest, math.MaxUint64),
+		biggest:       y.KeyWithTs(biggest, 0),
+		surf:          surf,
+		remoteIndex:   data,
+		remoteIndexFd: indexFile,
+	}, nil
+}
+
+func openLocalFile(filename string, loadingMode options.FileLoadingMode) (*Table, error) {
+	fd, err := y.OpenExistingFile(filename, 0)
+	if err != nil {
+		return nil, y.Wrap(err)
+	}
 	fileInfo, err := fd.Stat()
 	if err != nil {
 		// It's OK to ignore fd.Close() errs in this function because we have only read
@@ -146,7 +220,6 @@ func OpenTable(fd *os.File, loadingMode options.FileLoadingMode) (*Table, error)
 		return nil, y.Wrap(err)
 	}
 
-	filename := fileInfo.Name()
 	id, ok := ParseFileID(filename)
 	if !ok {
 		_ = fd.Close()
@@ -209,12 +282,25 @@ func (t *Table) Close() error {
 // which means caller should fallback to seek search. Otherwise it value will be true.
 // If the hash index does not contain such an element the returned key will be nil.
 func (t *Table) PointGet(key []byte, keyHash uint64) ([]byte, y.ValueStruct, bool) {
-	blkIdx, offset := t.hIdx.lookup(keyHash)
-	if blkIdx == resultFallback {
-		return nil, y.ValueStruct{}, false
-	}
-	if blkIdx == resultNoEntry {
-		return nil, y.ValueStruct{}, true
+	var blkIdx uint32
+	var offset uint8
+	if t.surf != nil {
+		v, ok := t.surf.Get(y.ParseKey(key))
+		if !ok {
+			return nil, y.ValueStruct{}, true
+		}
+		var indexEntry indexEntry
+		indexEntry.FromBytes(v)
+		blkIdx = uint32(indexEntry.blockIdx)
+		offset = indexEntry.offset
+	} else {
+		blkIdx, offset = t.hIdx.lookup(keyHash)
+		if blkIdx == resultFallback {
+			return nil, y.ValueStruct{}, false
+		}
+		if blkIdx == resultNoEntry {
+			return nil, y.ValueStruct{}, true
+		}
 	}
 
 	it := t.NewIteratorNoRef(false)
@@ -392,10 +478,10 @@ func NewFilename(id uint64, dir string) string {
 }
 
 func (t *Table) loadToRAM() error {
-//	t.mmap = make([]byte, t.tableSize)
-//	read, err := t.fd.ReadAt(t.mmap, 0)
-//	if err != nil || read != t.tableSize {
-//		return y.Wrapf(err, "Unable to load file in memory. Table file: %s", t.Filename())
-//	}
+	//	t.mmap = make([]byte, t.tableSize)
+	//	read, err := t.fd.ReadAt(t.mmap, 0)
+	//	if err != nil || read != t.tableSize {
+	//		return y.Wrapf(err, "Unable to load file in memory. Table file: %s", t.Filename())
+	//	}
 	return nil
 }

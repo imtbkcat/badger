@@ -33,6 +33,10 @@ type Options struct {
 	// -------------------
 	// Directory to store the data in. Should exist and be writable.
 	Dir string
+
+	RemoteDir        string
+	RemoteLevelStart int
+
 	// Directory to store the value log in. Can be the same as Dir. Should
 	// exist and be writable.
 	ValueDir string

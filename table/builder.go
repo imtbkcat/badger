@@ -25,6 +25,7 @@ import (
 
 	"github.com/coocood/badger/fileutil"
 	"github.com/coocood/badger/options"
+	"github.com/coocood/badger/surf"
 	"github.com/coocood/badger/y"
 	"github.com/coocood/bbloom"
 	"github.com/dgryski/go-farm"
@@ -74,13 +75,37 @@ type Builder struct {
 
 	hashEntries []hashEntry
 	bloomFpr    float64
-	isExternal  bool
 	opt         options.TableBuilderOptions
+
+	isExternal bool
+	usingSuRF  bool
+	keys       [][]byte
+	indexes    [][]byte
+}
+
+type indexEntry struct {
+	// blockIdx is the index of block which contains this key.
+	blockIdx uint16
+
+	// offset is the index of this key in block.
+	offset uint8
+}
+
+func (e *indexEntry) Bytes() []byte {
+	b := make([]byte, 3)
+	binary.BigEndian.PutUint16(b, e.blockIdx)
+	b[2] = e.offset
+	return b
+}
+
+func (e *indexEntry) FromBytes(b []byte) {
+	e.blockIdx = binary.BigEndian.Uint16(b)
+	e.offset = b[2]
 }
 
 // NewTableBuilder makes a new TableBuilder.
 // If the limiter is nil, the write speed during table build will not be limited.
-func NewTableBuilder(f *os.File, limiter *rate.Limiter, level int, opt options.TableBuilderOptions) *Builder {
+func NewTableBuilder(f *os.File, limiter *rate.Limiter, level int, usingSuRF bool, opt options.TableBuilderOptions) *Builder {
 	t := float64(opt.LevelSizeMultiplier)
 	fprBase := math.Pow(t, 1/(t-1)) * opt.LogicalBloomFPR * (t - 1)
 	levelFactor := math.Pow(t, float64(opt.MaxLevels-level))
@@ -92,6 +117,7 @@ func NewTableBuilder(f *os.File, limiter *rate.Limiter, level int, opt options.T
 		hashEntries: make([]hashEntry, 0, 4*1024),
 		bloomFpr:    fprBase / levelFactor,
 		opt:         opt,
+		usingSuRF:   usingSuRF,
 	}
 }
 
@@ -149,10 +175,16 @@ func (b *Builder) addHelper(key []byte, v y.ValueStruct) {
 		if !b.isExternal {
 			keyNoTs = y.ParseKey(key)
 		}
-		keyHash := farm.Fingerprint64(keyNoTs)
-		// It is impossible that a single table contains 16 million keys.
-		y.Assert(len(b.baseKeysEndOffs) < maxBlockCnt)
-		b.hashEntries = append(b.hashEntries, hashEntry{keyHash, uint16(len(b.baseKeysEndOffs)), uint8(b.counter)})
+		if b.usingSuRF {
+			b.keys = append(b.keys, y.SafeCopy(nil, keyNoTs))
+			e := indexEntry{uint16(len(b.baseKeysEndOffs)), uint8(b.counter)}
+			b.indexes = append(b.indexes, e.Bytes())
+		} else {
+			keyHash := farm.Fingerprint64(keyNoTs)
+			// It is impossible that a single table contains 16 million keys.
+			y.Assert(len(b.baseKeysEndOffs) < maxBlockCnt)
+			b.hashEntries = append(b.hashEntries, hashEntry{keyHash, uint16(len(b.baseKeysEndOffs)), uint8(b.counter)})
+		}
 	}
 
 	// diffKey stores the difference of key with blockBaseKey.
@@ -237,6 +269,36 @@ func (b *Builder) Finish() error {
 	b.buf = append(b.buf, u32SliceToBytes(b.baseKeysEndOffs)...)
 	b.buf = append(b.buf, u32ToBytes(uint32(len(b.baseKeysEndOffs)))...)
 
+	if b.usingSuRF {
+		idxName := b.w.Name() + ".idx"
+		fd, err := os.OpenFile(idxName, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.ModePerm)
+		if err != nil {
+			return err
+		}
+		builder := surf.NewBuilder(3, surf.MixedSuffix, 4, 4)
+		s := builder.Build(b.keys, b.indexes, 40)
+		if _, err := fd.Write(u32ToBytes(uint32(s.MarshalSize()))); err != nil {
+			return err
+		}
+		if err := s.WriteTo(fd); err != nil {
+			return err
+		}
+		smallest, biggest := b.keys[0], b.keys[len(b.keys)-1]
+		if _, err := fd.Write(u32ToBytes(uint32(len(smallest)))); err != nil {
+			return err
+		}
+		if _, err := fd.Write(smallest); err != nil {
+			return err
+		}
+		if _, err := fd.Write(u32ToBytes(uint32(len(biggest)))); err != nil {
+			return err
+		}
+		if _, err := fd.Write(biggest); err != nil {
+			return err
+		}
+		fd.Close()
+	}
+
 	// Write bloom filter.
 	bloomFilter := bbloom.New(float64(len(b.hashEntries)), b.bloomFpr)
 	for _, he := range b.hashEntries {
@@ -246,7 +308,7 @@ func (b *Builder) Finish() error {
 	b.buf = append(b.buf, bfData...)
 	b.buf = append(b.buf, u32ToBytes(uint32(len(bfData)))...)
 
-	if b.opt.EnableHashIndex {
+	if b.opt.EnableHashIndex && !b.usingSuRF {
 		b.buf = buildHashIndex(b.buf, b.hashEntries, b.opt.HashUtilRatio)
 	} else {
 		b.buf = append(b.buf, u32ToBytes(0)...)
@@ -254,6 +316,7 @@ func (b *Builder) Finish() error {
 	if err := b.w.Append(b.buf); err != nil {
 		return err
 	}
+
 	ts := uint64(math.MaxUint64)
 	if b.isExternal {
 		// External builder doesn't append ts to the keys, the output sst should has a non-MaxUint64 global ts.
